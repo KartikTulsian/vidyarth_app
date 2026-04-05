@@ -4,7 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:vidyarth_app/core/services/supabase_service.dart';
 import 'package:vidyarth_app/features/inventory/widgets/dealer_add_item_sheet.dart';
 import 'package:vidyarth_app/features/message/screens/chat_page.dart';
-import 'package:vidyarth_app/features/trade/screens/add_item_sheet.dart';
+import 'package:vidyarth_app/features/trade/widgets/add_item_sheet.dart';
 import 'package:vidyarth_app/shared/models/app_enums.dart';
 import 'package:vidyarth_app/shared/models/offer_model.dart';
 import 'package:vidyarth_app/shared/models/stuff_model.dart';
@@ -125,9 +125,16 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                 _buildWhiteSection(Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildIntentBadge(offer?.offerType),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _buildIntentBadge(offer?.offerType),
+                        if (widget.item.isInventory) _buildInventoryStatus(),
+                      ],
+                    ),
                     const SizedBox(height: 8),
                     _buildMainHeader(),
+                    _buildQuantityInfo(),
                     const SizedBox(height: 12),
                     if (offer != null) _buildSmartPriceSection(offer),
                   ],
@@ -337,6 +344,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
   }
 
   Widget _buildStickyBottom(BuildContext context, Offer? offer) {
+    final bool isOutOfStock = widget.item.isInventory && widget.item.stockQuantity <= 0;
+
     return Positioned(
       bottom: 0,
       left: 0,
@@ -345,7 +354,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
         child: Container(
           height: 70,
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: isOutOfStock ? Colors.grey : const Color(0xFFFFD814),
             boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, -2))],
           ),
           child: Row(
@@ -369,15 +378,29 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                 child: Material(
                   color: const Color(0xFFFFD814), // Flipkart Yellow
                   child: InkWell(
-                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => ChatPage(
+                    // onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => ChatPage(
+                    //   receiverId: widget.item.ownerId,
+                    //   receiverName: widget.item.title,
+                    //   offerId: offer?.id,
+                    // ))),
+                    onTap: isOutOfStock
+                        ? null // Disable button
+                        : () => Navigator.push(context, MaterialPageRoute(builder: (context) => ChatPage(
                       receiverId: widget.item.ownerId,
                       receiverName: widget.item.title,
                       offerId: offer?.id,
                     ))),
                     child: Center(
                       child: Text(
-                        offer?.offerType == OfferType.RENT ? "RENT NOW" : "CHAT TO BUY",
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, letterSpacing: 0.5),
+                        isOutOfStock
+                            ? "OUT OF STOCK"
+                            : (offer?.offerType == OfferType.RENT ? "RENT NOW" : "CHAT TO BUY"),
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          letterSpacing: 0.5,
+                          color: isOutOfStock ? Colors.white60 : Colors.black,
+                        ),
                       ),
                     ),
                   ),
@@ -503,7 +526,65 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     );
   }
 
-  // --- HELPERS ---
+  Widget _buildQuantityInfo() {
+    // If quantity is 1, it's a standard single item
+    if (widget.item.quantity <= 1) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.blueGrey[50],
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        "Pack of ${widget.item.quantity}",
+        style: const TextStyle(
+          fontWeight: FontWeight.bold,
+          fontSize: 12,
+          color: Colors.blueGrey,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInventoryStatus() {
+    // Only show detailed stock for Inventory/Dealer items
+    if (!widget.item.isInventory) return const SizedBox.shrink();
+
+    final bool inStock = widget.item.stockQuantity > 0;
+    final Color statusColor = inStock ? Colors.green : Colors.red;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Icon(
+            inStock ? Icons.check_circle_outline : Icons.error_outline,
+            color: statusColor,
+            size: 16,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            inStock ? "IN STOCK" : "OUT OF STOCK",
+            style: TextStyle(
+              color: statusColor,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+              letterSpacing: 0.5,
+            ),
+          ),
+          if (inStock) ...[
+            const SizedBox(width: 8),
+            Text(
+              "(${widget.item.stockQuantity} units available)",
+              style: TextStyle(color: Colors.grey[600], fontSize: 12),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 
   Widget _buildSectionTitle(String title) {
     return Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87));

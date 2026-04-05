@@ -269,13 +269,26 @@ class _DealerProfileState extends State<DealerProfile> {
 
   Widget _buildMembershipCard() {
     // Determine membership text based on SubTier Enum
-    String tierText = _userModel?.subTier == SubTier.BASIC ? 'Basic' : 'Pro';
+    String tierText = _userModel?.subTier.name ?? 'BASIC';
+
     return GestureDetector(
-      onTap: () {
-        Navigator.push(context, MaterialPageRoute(builder: (context) => SubscriptionPage(
-          role: _userModel?.role.name ?? 'STUDENT',
-          currentTier: _userModel?.subTier.name ?? 'BASIC',
-        )));
+      onTap: () async {
+        // Await the result from the subscription page
+        final bool? shouldRefresh = await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(
+            builder: (context) => SubscriptionPage(
+              role: _userModel?.role.name ?? 'STUDENT',
+              currentTier: _userModel?.subTier.name ?? 'BASIC',
+            ),
+          ),
+        );
+
+        // If the result is true, refresh the profile data
+        if (shouldRefresh == true) {
+          debugPrint("DEALER PROFILE: Refreshing data after successful upgrade.");
+          _loadProfile();
+        }
       },
       child: Padding(
         padding: const EdgeInsets.all(16.0),

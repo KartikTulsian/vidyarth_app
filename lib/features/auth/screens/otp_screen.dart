@@ -31,29 +31,12 @@ class _OtpScreenState extends State<OtpScreen> {
       );
 
       if (response.session != null) {
-        // Verification Successful!
-        // final hasProfile = await _supabaseService.hasProfile();
-        // if (!mounted) return;
-        //
-        // if (hasProfile) {
-        //   Navigator.pushAndRemoveUntil(
-        //       context,
-        //       MaterialPageRoute(builder: (_) => const DashboardScreen()),
-        //           (r) => false
-        //   );
-        // } else {
-        //   Navigator.pushReplacement(
-        //       context,
-        //       // Pass the email so it auto-fills
-        //       MaterialPageRoute(builder: (_) => UserFormScreen(initialEmail: widget.email))
-        //   );
-        // }
 
         final userModel = await _supabaseService.getUnifiedProfile();
 
         if (!mounted) return;
 
-        if (userModel != null) {
+        if (userModel != null && userModel.phone != null && userModel.phone!.isNotEmpty) {
           Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const DashboardScreen()));
         } else {
           // Pass the email from the widget so the form isn't empty

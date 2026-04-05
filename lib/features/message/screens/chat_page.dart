@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:vidyarth_app/core/services/supabase_service.dart';
+import 'package:vidyarth_app/features/inventory/widgets/dealer_add_item_sheet.dart';
 import 'package:vidyarth_app/features/message/widgets/contract_review_card.dart';
 import 'package:vidyarth_app/features/message/widgets/trade_contract_sheet.dart';
-import 'package:vidyarth_app/features/trade/screens/add_item_sheet.dart';
+import 'package:vidyarth_app/features/trade/widgets/add_item_sheet.dart';
 import 'package:vidyarth_app/features/trade/screens/item_detail_page.dart';
 import 'package:vidyarth_app/shared/models/message_model.dart';
 import 'package:vidyarth_app/shared/models/offer_model.dart';
@@ -65,9 +66,9 @@ class _ChatPageState extends State<ChatPage> {
 
     // Show a loading indicator
     showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => const Center(child: CircularProgressIndicator())
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const Center(child: CircularProgressIndicator()),
     );
 
     try {
@@ -85,9 +86,13 @@ class _ChatPageState extends State<ChatPage> {
           ),
         );
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Item or Offer details are no longer available")),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Item or Offer details are no longer available"),
+            ),
+          );
+        }
       }
     } catch (e) {
       if (mounted) Navigator.pop(context);
@@ -112,25 +117,118 @@ class _ChatPageState extends State<ChatPage> {
       text: text,
     );
 
-    await _supabase.from('messages').insert(message.toMap());
+    try {
+      await _supabase.from('messages').insert(message.toMap());
+    } catch (e) {
+      debugPrint("Error sending message: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Failed to send message in chat: $e")));
+      }
+    }
+  }
+
+  Future<void> _onContractSent(Trade trade) async {
+    try {
+      debugPrint("DEBUG: _onContractSent started. Offer ID: ${trade.offerId}");
+      // 1. Validate UUIDs before sending to prevent the "22P02" error
+      if (trade.offerId.isEmpty ||
+          trade.borrowerId.isEmpty ||
+          trade.lenderId.isEmpty) {
+        throw Exception(
+          "Invalid UUIDs: Offer, Borrower, or Lender ID is empty.",
+        );
+      }
+
+      final response = await _supabase
+          .from('trades')
+          .insert(trade.toMap())
+          .select()
+          .single();
+      final newTrade = Trade.fromMap(response);
+      debugPrint(
+        "DEBUG: Trade saved successfully. New Trade ID: ${newTrade.tradeId}",
+      );
+
+      // 2. ONLY mark as unavailable if it is a Student item (not a Dealer inventory item)
+      final stuffId = trade.offerDetails?.stuffId;
+      if (stuffId == null) {
+        debugPrint(
+          "DEBUG ERROR: stuffId is NULL. Skipping availability update.",
+        );
+      } else {
+        debugPrint("DEBUG: Checking inventory status for Stuff ID: $stuffId");
+
+        final stuffData = await _supabase
+            .from('stuff')
+            .select('is_inventory')
+            .eq('stuff_id', stuffId)
+            .maybeSingle();
+
+        if (stuffData != null) {
+          bool isInventory = stuffData['is_inventory'] ?? false;
+          debugPrint("DEBUG: Item isInventory: $isInventory");
+
+          if (!isInventory) {
+            // STUDENT LOGIC: Single item. Hide immediately to prevent double-contracting.
+            debugPrint(
+              "DEBUG: Student item detected. Marking is_available = false.",
+            );
+            await _supabase
+                .from('stuff')
+                .update({'is_available': false})
+                .eq('stuff_id', stuffId);
+          } else {
+            // DEALER LOGIC: Do nothing. Keep it visible in shop because there is stock.
+            debugPrint(
+              "DEBUG: Dealer item detected. Keeping available for other customers.",
+            );
+          }
+        }
+      }
+
+      setState(() {
+        _messageController.text = "TRADE_CONTRACT_ID:${newTrade.tradeId}";
+      });
+      debugPrint("DEBUG: Triggering _sendMessage with contract prefix.");
+      _sendMessage();
+
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint("DEBUG ERROR in _onContractSent: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Error: ${e.toString()}")));
+      }
+    }
   }
 
   void _openTradeContractWorkflow() async {
+
+    if (_offerDetails?.stuff == null) return;
+
+    final bool isInventory = _offerDetails!.stuff!.isInventory;
 
     // STEP 1: Let the owner update the item details (Negotiation phase)
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => AddItemSheet(
-        itemToEdit: _offerDetails!.stuff, // Pass the associated stuff
-        onItemAdded: () => Navigator.pop(context),
-      ),
+      builder: (context) {
+        // Dynamically open the correct sheet to preserve inventory status and stock
+        if (isInventory) {
+          return DealerAddItemSheet(
+            itemToEdit: _offerDetails!.stuff,
+            onItemAdded: () => Navigator.pop(context),
+          );
+        } else {
+          return AddItemSheet(
+            itemToEdit: _offerDetails!.stuff,
+            onItemAdded: () => Navigator.pop(context),
+          );
+        }
+      },
     );
-    // // 1. Fetch the offer details for this chat
-    // if (widget.offerId == null) return;
-    //
-    // final offer = await _service.getOfferById(widget.offerId!);
 
     // STEP 2: Refresh offer details after potential database update
     await _loadOfferAndCheckOwnership();
@@ -142,15 +240,7 @@ class _ChatPageState extends State<ChatPage> {
         builder: (context) => TradeContractSheet(
           offer: _offerDetails!,
           borrowerId: widget.receiverId,
-          onContractSent: (trade) async {
-            // Save Trade to DB
-            final response = await _supabase.from('trades').insert(trade.toMap()).select().single();
-            final tradeId = response['trade_id'];
-
-            // Send the hidden trigger message to show the ContractReviewCard
-            _messageController.text = "TRADE_CONTRACT_ID:$tradeId";
-            _sendMessage();
-          },
+          onContractSent: (trade) => _onContractSent(trade),
         ),
       );
     }
@@ -167,7 +257,14 @@ class _ChatPageState extends State<ChatPage> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.receiverName, style: const TextStyle(color: Colors.black, fontSize: 16, fontWeight: FontWeight.bold)),
+            Text(
+              widget.receiverName,
+              style: const TextStyle(
+                color: Colors.black,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             // const Text("Online", style: TextStyle(color: Colors.green, fontSize: 11)),
           ],
         ),
@@ -179,8 +276,11 @@ class _ChatPageState extends State<ChatPage> {
           ),
           if (_isOwner && _offerDetails != null) // Only shown to Owner
             IconButton(
-                onPressed: _openTradeContractWorkflow,
-                icon: const Icon(Icons.handshake_outlined, color: Colors.blueAccent)
+              onPressed: _openTradeContractWorkflow,
+              icon: const Icon(
+                Icons.handshake_outlined,
+                color: Colors.blueAccent,
+              ),
             ),
           const SizedBox(width: 8),
         ],
@@ -195,25 +295,59 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _buildMessageList() {
-    return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: _supabase
-          .from('messages')
-          .stream(primaryKey: ['message_id'])
-          .eq('offer_id', widget.offerId ?? '') // Only get messages for this item
-          .order('sent_at', ascending: false),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) return Center(child: Text("Error loading messages"));
-        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+    debugPrint("DEBUG: Initializing stream for offerId: ${widget.offerId}");
 
-        final messages = snapshot.data!
-            .map((m) => Message.fromMap(m))
-            .where((m) {
-          // Secondary security check: Ensure the message involves the current user
-          return (m.senderId == _currentUserId && m.receiverId == widget.receiverId) ||
-              (m.senderId == widget.receiverId && m.receiverId == _currentUserId);
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: (widget.offerId != null && widget.offerId!.isNotEmpty)
+          ? _supabase
+                .from('messages')
+                .stream(primaryKey: ['message_id'])
+                .eq('offer_id', widget.offerId!)
+                .order('sent_at', ascending: false)
+          : null,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          debugPrint("CRITICAL STREAM ERROR: ${snapshot.error}");
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.wifi_off_rounded,
+                  color: Colors.grey,
+                  size: 48,
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Connection Issue. Please check if Realtime is enabled in Supabase.",
+                ),
+                TextButton(
+                  onPressed: () => setState(() {}), // Simple retry
+                  child: const Text("Retry Connection"),
+                ),
+              ],
+            ),
+          );
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        if (!snapshot.hasData || snapshot.data == null) {
+          return const Center(child: Text("Start a conversation..."));
+        }
+
+        final data = snapshot.data ?? [];
+        final messages = data.map((m) => Message.fromMap(m)).where((m) {
+          return (m.senderId == _currentUserId &&
+                  m.receiverId == widget.receiverId) ||
+              (m.senderId == widget.receiverId &&
+                  m.receiverId == _currentUserId);
         }).toList();
 
-        if (messages.isEmpty) return const Center(child: Text("No messages yet."));
+        if (messages.isEmpty)
+          return const Center(child: Text("No messages yet."));
 
         return ListView.builder(
           reverse: true,
@@ -245,21 +379,34 @@ class _ChatPageState extends State<ChatPage> {
       child: SafeArea(
         child: Row(
           children: [
-            IconButton(onPressed: () {}, icon: const Icon(Icons.add_circle_outline, color: Colors.grey)),
+            IconButton(
+              onPressed: () {},
+              icon: const Icon(Icons.add_circle_outline, color: Colors.grey),
+            ),
             Expanded(
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(24)),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(24),
+                ),
                 child: TextField(
                   controller: _messageController,
-                  decoration: const InputDecoration(hintText: "Type a message...", border: InputBorder.none, hintStyle: TextStyle(fontSize: 14)),
+                  decoration: const InputDecoration(
+                    hintText: "Type a message...",
+                    border: InputBorder.none,
+                    hintStyle: TextStyle(fontSize: 14),
+                  ),
                 ),
               ),
             ),
             const SizedBox(width: 8),
             CircleAvatar(
               backgroundColor: Colors.blueAccent,
-              child: IconButton(onPressed: _sendMessage, icon: const Icon(Icons.send, color: Colors.white, size: 18)),
+              child: IconButton(
+                onPressed: _sendMessage,
+                icon: const Icon(Icons.send, color: Colors.white, size: 18),
+              ),
             ),
           ],
         ),
@@ -304,22 +451,36 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _fetchAndBuildContractCard(String messageText, bool isMe) {
-    final tradeId = messageText.split(':').last;
+    final List<String> parts = messageText.split(':');
+    if (parts.length < 2) return const Text("Invalid Contract Data");
+
+    final String tradeId = parts.last.trim();
 
     if (_tradeCache.containsKey(tradeId)) {
-      return ContractReviewCard(
-        trade: _tradeCache[tradeId]!,
-        isMe: isMe,
-        onAccept: () => _finalizeTrade(_tradeCache[tradeId]!),
-        onReject: () => _updateTradeStatus(tradeId, 'REJECTED'),
-      );
+      return _buildContractCardUI(_tradeCache[tradeId]!, isMe);
     }
 
     return FutureBuilder<Trade?>(
       future: _service.getTradeById(tradeId),
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) return const SizedBox.shrink();
-        if (!snapshot.hasData || snapshot.data == null) return const Text("Contract Expired");
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const SizedBox(
+            height: 50,
+            child: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        if (!snapshot.hasData || snapshot.data == null) {
+          print(
+            "DEBUG: Trade ID $tradeId not found. Verify your 'trades' table.",
+          );
+          return const Card(
+            child: ListTile(
+              title: Text("Contract details unavailable"),
+              leading: Icon(Icons.error_outline),
+            ),
+          );
+        }
 
         final Trade trade = snapshot.data!;
         return ContractReviewCard(
@@ -332,31 +493,119 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  Widget _buildContractCardUI(Trade trade, bool isMe) {
+    return ContractReviewCard(
+      trade: trade,
+      isMe: isMe,
+      onAccept: () => _finalizeTrade(trade),
+      onReject: () => _updateTradeStatus(trade.tradeId!, 'REJECTED'),
+    );
+  }
+
   Future<void> _finalizeTrade(Trade trade) async {
     // Generate a 6-digit random pickup code
-    final String code = (100000 + (DateTime.now().millisecond * 899)).toString().substring(0, 6);
+    try {
+      debugPrint("DEBUG: Finalizing trade ${trade.tradeId}");
+      final String code = (100000 + (DateTime.now().millisecond * 899))
+          .toString()
+          .substring(0, 6);
 
-    await _supabase.from('trades').update({
-      'status': 'ACCEPTED',
-      'pickup_code': code,
-      'start_date': DateTime.now().toIso8601String(),
-    }).eq('trade_id', trade.tradeId!);
+      await _supabase
+          .from('trades')
+          .update({
+            'status': 'ACCEPTED',
+            'pickup_code': code,
+            'start_date': DateTime.now().toIso8601String(),
+          })
+          .eq('trade_id', trade.tradeId!);
 
-    if (_tradeCache.containsKey(trade.tradeId)) {
-      final updatedTrade = Trade.fromMap({
-        ...trade.toMap(), // Existing data
-        'trade_id': trade.tradeId,
-        'status': 'ACCEPTED',
-        'pickup_code': code,
-      });
-      setState(() {
-        _tradeCache[trade.tradeId!] = updatedTrade;
-      });
+      // if (_tradeCache.containsKey(trade.tradeId)) {
+      //   final updatedTrade = Trade.fromMap({
+      //     ...trade.toMap(), // Existing data
+      //     'trade_id': trade.tradeId,
+      //     'status': 'ACCEPTED',
+      //     'pickup_code': code,
+      //   });
+      //   setState(() {
+      //     _tradeCache[trade.tradeId!] = updatedTrade;
+      //   });
+      // }
+      // 1. Fetch the current stuff details
+      String? stuffId = trade.offerDetails?.stuffId;
+
+      if (stuffId == null) {
+        final offerData = await _supabase
+            .from('offers')
+            .select('stuff_id')
+            .eq('offer_id', trade.offerId)
+            .single();
+        stuffId = offerData['stuff_id'];
+      }
+
+      if (stuffId != null) {
+        final stuffData = await _supabase
+            .from('stuff')
+            .select('stock_quantity, is_inventory')
+            .eq('stuff_id', stuffId)
+            .single();
+
+        bool isInventory = stuffData['is_inventory'] ?? false;
+        int currentStock = stuffData['stock_quantity'] ?? 0;
+
+        if (isInventory) {
+          int newStock = currentStock - trade.finalizedQuantity;
+          if (newStock < 0) newStock = 0;
+
+          debugPrint("DEBUG: Dealer item. Reducing stock: $currentStock -> $newStock");
+
+          // Update stock but KEEP is_inventory = true
+          await _supabase
+              .from('stuff')
+              .update({
+                'stock_quantity': newStock,
+                'is_available': newStock > 0,
+              })
+              .eq('stuff_id', stuffId);
+
+          print(
+            "DEBUG: Subtracted ${trade.finalizedQuantity}. New stock for $stuffId: $newStock",
+          );
+        } else {
+          await _supabase
+              .from('stuff')
+              .update({'is_available': false})
+              .eq('stuff_id', stuffId);
+
+          print("DEBUG: Student item $stuffId marked as unavailable.");
+        }
+      }
+
+      String paymentConfirmation;
+      if (trade.finalizedPrice != null && trade.finalizedPrice! > 0) {
+        paymentConfirmation =
+            "✅ I've accepted the contract! I'm sending ₹${trade.finalizedPrice! + (trade.finalizedDeposit ?? 0)} to your UPI now. Our pickup code is: $code";
+      } else {
+        paymentConfirmation =
+            "✅ I've accepted the contract! Our pickup code is: $code";
+      }
+
+      _messageController.text = paymentConfirmation;
+      _sendMessage();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              "Contract Accepted! Please complete the payment via UPI.",
+            ),
+          ),
+        );
+      }
+
+      setState(() {});
+    } catch (e) {
+      print("ERROR in _finalizeTrade: $e");
     }
-
-    _messageController.text = "✅ I've accepted the contract! Our pickup code is: $code";
-    _sendMessage();
-    setState(() {});
   }
 
   Future<void> _updateTradeStatus(String tradeId, String newStatus) async {
@@ -367,14 +616,26 @@ class _ChatPageState extends State<ChatPage> {
           .eq('trade_id', tradeId);
 
       if (newStatus == 'REJECTED') {
+        final trade = _tradeCache[tradeId];
+        if (trade?.offerDetails?.stuffId != null) {
+          await _supabase
+              .from('stuff')
+              .update({
+                'is_available': true,
+              }) // Only update availability, keep is_inventory as-is
+              .eq('stuff_id', trade!.offerDetails!.stuffId!);
+        }
+
         _messageController.text = "❌ I have declined the trade terms.";
         _sendMessage();
       }
       setState(() {}); // Refresh UI to update the card state
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error updating status: $e")),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Error updating status: $e")));
+      }
     }
   }
 }

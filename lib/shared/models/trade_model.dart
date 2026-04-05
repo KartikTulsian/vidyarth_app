@@ -1,4 +1,5 @@
 import 'package:vidyarth_app/shared/models/app_enums.dart';
+import 'package:vidyarth_app/shared/models/offer_model.dart';
 
 class Trade {
   final String? tradeId;
@@ -15,6 +16,9 @@ class Trade {
   final OfferType? offerType;
   final String? pickupCode;
   final DateTime? createdAt;
+  final String? ownerPaymentDetails;
+  final double? platformFee;
+  Offer? offerDetails;
 
   Trade({
     this.tradeId,
@@ -31,6 +35,9 @@ class Trade {
     this.offerType,
     this.pickupCode,
     this.createdAt,
+    this.ownerPaymentDetails,
+    this.platformFee,
+    this.offerDetails,
   });
 
   factory Trade.fromMap(Map<String, dynamic> map) {
@@ -52,10 +59,14 @@ class Trade {
       endDate: map['end_date'] != null ? DateTime.parse(map['end_date']) : null,
       pickupCode: map['pickup_code'],
       createdAt: map['created_at'] != null ? DateTime.parse(map['created_at']) : null,
+      ownerPaymentDetails: map['owner_payment_details'],
+      platformFee: (map['platform_fee'] as num?)?.toDouble(),
+      offerDetails: map['offers'] != null ? Offer.fromMap(map['offers']) : null,
     );
   }
 
   Map<String, dynamic> toMap() => {
+    if (tradeId != null) 'trade_id': tradeId,
     'offer_id': offerId,
     'borrower_id': borrowerId,
     'lender_id': lenderId,
@@ -65,7 +76,10 @@ class Trade {
     'finalized_terms': finalizedTerms,
     'finalized_deposit': finalizedDeposit,
     'offer_type': offerType?.name,
+    'pickup_code': pickupCode,
     'start_date': startDate?.toIso8601String(),
     'end_date': endDate?.toIso8601String(),
+    'owner_payment_details': ownerPaymentDetails,
+    'platform_fee': platformFee,
   };
 }

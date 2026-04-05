@@ -240,14 +240,26 @@ class _StudentProfileState extends State<StudentProfile> {
   Widget _buildMembershipCard() {
     // Determine membership label based on role and subTier enums
     String roleLabel = _userModel?.role == UserRole.STUDENT ? "Student" : "User";
-    String tierLabel = _userModel?.subTier == SubTier.BASIC ? "Basic" : "Pro";
+    String tierLabel = _userModel?.subTier.name ?? 'BASIC';
 
     return GestureDetector(
-      onTap: () {
-        Navigator.push(context, MaterialPageRoute(builder: (context) => SubscriptionPage(
-          role: _userModel?.role.name ?? 'STUDENT',
-          currentTier: _userModel?.subTier.name ?? 'BASIC',
-        )));
+      onTap: () async {
+        // Await the boolean result
+        final bool? result = await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(
+            builder: (context) => SubscriptionPage(
+              role: _userModel?.role.name ?? 'STUDENT',
+              currentTier: _userModel?.subTier.name ?? 'BASIC',
+            ),
+          ),
+        );
+
+        // Trigger refresh if payment was successful
+        if (result == true) {
+          debugPrint("STUDENT PROFILE: Refreshing data after successful upgrade.");
+          _loadProfile();
+        }
       },
       child: Padding(
         padding: const EdgeInsets.all(16.0),

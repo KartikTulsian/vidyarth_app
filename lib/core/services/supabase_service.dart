@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/cupertino.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:vidyarth_app/shared/models/app_enums.dart';
 import 'package:vidyarth_app/shared/models/dealer_profile_model.dart';
@@ -6,6 +7,8 @@ import 'package:vidyarth_app/shared/models/delivery_model.dart';
 import 'package:vidyarth_app/shared/models/delivery_profile_model.dart';
 import 'package:vidyarth_app/shared/models/offer_model.dart';
 import 'package:vidyarth_app/shared/models/profile_model.dart';
+import 'package:vidyarth_app/shared/models/request_model.dart';
+import 'package:vidyarth_app/shared/models/request_trade_model.dart';
 import 'package:vidyarth_app/shared/models/school_model.dart';
 import 'package:vidyarth_app/shared/models/stuff_model.dart';
 import 'package:vidyarth_app/shared/models/tag_model.dart';
@@ -93,24 +96,25 @@ class SupabaseService {
     // 1. Update public.users
     await _client.from('users').upsert({
       'user_id': user.id,
+      'username': name,
       'role': role,
       'email': email,
       'phone': phone,
       'is_active': true,
-    });
+    }, onConflict: 'user_id');
 
     // 2. Update public.profiles
     await _client.from('profiles').upsert({
       'user_id': user.id,
       'full_name': name,
       'phone': phone,
-    });
+    }, onConflict: 'user_id');
 
     if (role == 'DEALER') {
       await _client.from('dealer_profiles').upsert({
         'dealer_id': user.id,
         'shop_name': "$name's Shop", // Default name until they edit it
-      });
+      }, onConflict: 'dealer_id');
     } else if (role == "DELIVERY") {
       await _client.from('delivery_profiles').upsert({
         'delivery_boy_id': user.id,
@@ -584,20 +588,21 @@ class SupabaseService {
     if (user == null || offerId == null) return;
 
     try {
-      _client
+      print("DEBUG: Marking messages as read for User: ${user.id}, Sender: $otherUserId, Offer: $offerId");
+
+      final response = await _client
           .from('messages')
           .update({'is_read': true})
           .eq('receiver_id', user.id)
           .eq('sender_id', otherUserId)
-          .eq('offer_id', offerId);
+          .eq('offer_id', offerId ?? '') // Handle null as empty string if that's your DB default
+          .eq('is_read', false)
+          .select();
 
-      // if (offerId != null) {
-      //   query = query.eq('offer_id', offerId); // FIX: Mark read only for this item
-      // }
+      print("DEBUG: Successfully marked ${response.length} messages as read.");
 
-      // await query;
     } catch (e) {
-      print("Error marking messages as read: $e");
+      print("DEBUG ERROR: markMessagesAsRead failed: $e");
     }
   }
 
@@ -696,7 +701,10 @@ class SupabaseService {
           .eq('trade_id', tradeId)
           .maybeSingle();
 
-      if (response == null) return null;
+      if (response == null) {
+        print("DEBUG: Trade $tradeId not found in database."); // Helpful for debugging
+        return null;
+      }
       return Trade.fromMap(response);
     } catch (e) {
       print("Error fetching trade: $e");
@@ -803,5 +811,134 @@ class SupabaseService {
         .order('created_at', ascending: false);
 
     return response as List;
+  }
+
+  Future<double> getOutstandingPlatformFees() async {
+    final user = client.auth.currentUser;
+    if (user == null) return 0.0;
+
+    try {
+      // Sum platform_fee from accepted trades where the user is the lender
+      final response = await _client
+          .from('trades')
+          .select('platform_fee')
+          .eq('lender_id', user.id)
+          .or('status.eq.ACCEPTED,status.eq.COMPLETED');
+
+      if (response == null || (response as List).isEmpty) {
+        print("DEBUG: No trades found for fee calculation");
+        return 0.0;
+      }
+
+      double total = 0.0;
+      for (var trade in (response as List)) {
+        // Safely convert to double and handle nulls
+        final fee = trade['platform_fee'];
+        if (fee != null) {
+          total += (fee as num).toDouble();
+        }
+      }
+      print("DEBUG: Service calculated total fees: ₹$total");
+      return total;
+    } catch (e) {
+      print("DEBUG ERROR: getOutstandingPlatformFees failed: $e");
+      return 0.0;
+    }
+  }
+
+  Future<List<Trade>> getFullTradeHistory() async {
+    final user = _client.auth.currentUser;
+    if (user == null) return [];
+
+    try {
+      final response = await _client
+          .from('trades')
+          .select('''
+            *,
+            offers(
+            *,
+            stuff (*)
+            )
+          ''')
+          .or('borrower_id.eq.${user.id}, lender_id.eq.${user.id}')
+          .order('created_at', ascending: false);
+
+      return (response as List).map((map) {
+        return Trade.fromMap(map);
+      }).toList();
+    } catch (e) {
+      print("Error fetching trade history: $e");
+      return [];
+    }
+  }
+
+  Future<void> completeTrade(String tradeId) async {
+    try {
+      await _client
+          .from('trades')
+          .update({'status': 'COMPLETED'})
+          .eq('trade_id', tradeId);
+    } catch (e) {
+      throw Exception("Could not complete trade: $e");
+    }
+  }
+
+  Future<void> createUrgentRequest(RequestModel request) async {
+    final user = _client.auth.currentUser;
+    if (user == null) return;
+
+    try {
+      debugPrint("DEBUG: Creating urgent request for ${request.stuffType}");
+      final data = request.toMap();
+      data['user_id'] = user.id;
+      await _client.from('requests').insert(data);
+      debugPrint("DEBUG: Request saved successfully for User: ${user.id}");
+    } catch (e) {
+      debugPrint("DEBUG ERROR: createUrgentRequest failed: $e");
+    }
+  }
+
+  Future<List<RequestModel>> getUserRequests() async {
+    final user = _client.auth.currentUser;
+    if (user == null) return [];
+
+    try {
+      final response = await _client
+          .from('requests')
+          .select()
+          .eq('user_id', user.id)
+          .order('created_at', ascending: false);
+
+      return (response as List).map((map) => RequestModel.fromMap(map)).toList();
+    } catch (e) {
+      print("Error fetching user requests: $e");
+      return [];
+    }
+  }
+
+  Future<RequestTrade?> getRequestTradeById(String tradeId) async {
+    try {
+      final response = await _client.from('request_trades').select().eq('trade_id', tradeId).maybeSingle();
+      if (response == null) return null;
+      return RequestTrade.fromMap(response);
+    } catch (e) {
+      print("Error fetching request trade: $e");
+      return null;
+    }
+  }
+
+  Future<void> markRequestMessagesAsRead(String otherUserId, String requestId) async {
+    final user = _client.auth.currentUser;
+    if (user == null) return;
+    try {
+      await _client.from('request_messages')
+          .update({'is_read': true})
+          .eq('receiver_id', user.id)
+          .eq('sender_id', otherUserId)
+          .eq('request_id', requestId)
+          .eq('is_read', false);
+    } catch (e) {
+      print("Error marking request messages read: $e");
+    }
   }
 }

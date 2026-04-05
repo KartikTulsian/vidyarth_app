@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:vidyarth_app/core/services/supabase_service.dart';
 import 'package:vidyarth_app/core/theme.dart';
 import 'package:vidyarth_app/features/browse/screens/browse_page.dart';
+import 'package:vidyarth_app/features/message/screens/student_message_screen.dart';
 import 'package:vidyarth_app/features/profile/screens/student/student_home.dart';
 import 'package:vidyarth_app/features/profile/screens/student/student_profile.dart';
 import 'package:vidyarth_app/features/trade/screens/trade_page.dart';
@@ -47,6 +48,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
     final List<Widget> pages = [
       StudentHome(onLogout: widget.onLogout, userData: _userModel!), // PASSING HERE
       BrowsePage(onLogout: widget.onLogout),
+      StudentMessageScreen(),
       TradePage(onLogout: widget.onLogout),
       StudentProfile(onLogout: widget.onLogout),
     ];
@@ -76,6 +78,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
           items: const [
             BottomNavigationBarItem(icon: Icon(Icons.home_rounded), label: 'Home'),
             BottomNavigationBarItem(icon: Icon(Icons.explore_rounded), label: 'Browse'),
+            BottomNavigationBarItem(icon: Icon(Icons.message_rounded), label: 'Messages'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.add_circle_outline, size: 32),
                 label: 'Trade'

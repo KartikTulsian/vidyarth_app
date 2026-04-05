@@ -90,20 +90,28 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _handleAuthSuccess() async {
-    final hasProfile = await _dbService.hasProfile();
+    // final hasProfile = await _dbService.hasProfile();
+
+    final userModel = await _dbService.getUnifiedProfile();
 
     if (!mounted) return;
 
-    if (hasProfile) {
+    final bool isProfileComplete = userModel != null &&
+        userModel.phone != null &&
+        userModel.phone!.isNotEmpty;
+
+    if (isProfileComplete) {
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (_) => const DashboardScreen()),
             (route) => false,
       );
     } else {
+      final currentUser = _dbService.client.auth.currentUser;
+
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => const UserFormScreen()),
+        MaterialPageRoute(builder: (_) => UserFormScreen(initialEmail: currentUser?.email)),
       );
     }
   }

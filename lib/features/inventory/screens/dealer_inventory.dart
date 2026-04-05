@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:vidyarth_app/core/services/supabase_service.dart';
 import 'package:vidyarth_app/features/inventory/widgets/dealer_add_item_sheet.dart';
 import 'package:vidyarth_app/features/message/screens/chat_page.dart';
+import 'package:vidyarth_app/features/message/screens/messageScreen.dart';
 import 'package:vidyarth_app/features/trade/screens/item_detail_page.dart';
 import 'package:vidyarth_app/shared/models/stuff_model.dart';
 
@@ -26,18 +27,6 @@ class _DealerInventoryState extends State<DealerInventory> {
       backgroundColor: Colors.transparent,
       builder: (context) =>
           DealerAddItemSheet(onItemAdded: () => setState(() {})),
-    );
-  }
-
-  void _openEditSheet(Stuff item) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => DealerAddItemSheet(
-        itemToEdit: item, // FIX: Pass 'item' directly as a Stuff object
-        onItemAdded: () => setState(() {}),
-      ),
     );
   }
 
@@ -73,9 +62,14 @@ class _DealerInventoryState extends State<DealerInventory> {
               itemCount: unreadMessages.length > 5 ? 5 : unreadMessages.length,
               itemBuilder: (context, index) {
                 final msg = unreadMessages[index];
+                final isRequest = msg['title_prefix'].toString().contains('Urgent');
+
                 return ListTile(
-                  leading: const CircleAvatar(child: Icon(Icons.mail_outline)),
-                  title: const Text("New message received"),
+                  leading: CircleAvatar(
+                    backgroundColor: isRequest ? Colors.redAccent : Colors.blueGrey,
+                    child: Icon(isRequest ? Icons.bolt : Icons.mail_outline, color: Colors.white),
+                  ),
+                  title: Text("${msg['title_prefix']}${msg['stuff_title'] ?? 'Message'}"),
                   subtitle: Text(
                     msg['text'],
                     maxLines: 1,
@@ -87,14 +81,9 @@ class _DealerInventoryState extends State<DealerInventory> {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => ChatPage(
-                          receiverId: msg['sender_id'],
-                          receiverName:
-                              "User", // You can fetch item title here if needed
-                          offerId: msg['offer_id'],
-                        ),
+                        builder: (context) => Messagescreen(onLogout: widget.onLogout),
                       ),
-                    );
+                    ).then((_) => setState(() {}));
                   },
                 );
               },
@@ -110,53 +99,73 @@ class _DealerInventoryState extends State<DealerInventory> {
       stream: _supabase
           .from('messages')
           .stream(primaryKey: ['message_id'])
+          .eq('receiver_id', currentUserId)
           .order('sent_at'),
-      builder: (context, snapshot) {
-        final unreadMessages =
-            snapshot.data
-                ?.where(
-                  (m) =>
-                      m['receiver_id'] == currentUserId &&
-                      m['is_read'] == false,
-                )
-                .toList() ??
-            [];
+      builder: (context, normalSnapshot) {
+        return StreamBuilder<List<Map<String, dynamic>>>(
+          stream: _supabase
+              .from('request_messages')
+              .stream(primaryKey: ['message_id'])
+              .eq('receiver_id', currentUserId)
+              .order('sent_at'),
+          builder: (context, requestSnapshot) {
 
-        int unreadCount = unreadMessages.length;
+            final normalMessages = normalSnapshot.data ?? [];
+            final requestMessages = requestSnapshot.data ?? [];
 
-        return Stack(
-          alignment: Alignment.center,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.notifications_none, color: Colors.black87),
-              onPressed: () => _showNotificationMenu(context, unreadMessages),
-            ),
-            if (unreadCount > 0)
-              Positioned(
-                right: 8,
-                top: 8,
-                child: Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: const BoxDecoration(
-                    color: Colors.red,
-                    shape: BoxShape.circle,
-                  ),
-                  constraints: const BoxConstraints(
-                    minWidth: 16,
-                    minHeight: 16,
-                  ),
-                  child: Text(
-                    '$unreadCount',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
+            final unreadNormal = normalMessages.where((m) => m['is_read'] == false).toList();
+            final unreadRequests = requestMessages.where((m) => m['is_read'] == false).toList();
+
+            // Combine and tag them
+            final combinedUnread = [
+              ...unreadNormal.map((m) => {...m, 'title_prefix': 'Trade: '}),
+              ...unreadRequests.map((m) => {...m, 'title_prefix': 'Urgent Request: '})
+            ];
+
+            // Sort newest first
+            combinedUnread.sort((a, b) {
+              final dateA = DateTime.tryParse(a['sent_at'] ?? '') ?? DateTime.now();
+              final dateB = DateTime.tryParse(b['sent_at'] ?? '') ?? DateTime.now();
+              return dateB.compareTo(dateA);
+            });
+
+            int unreadCount = combinedUnread.length;
+
+            return Stack(
+              alignment: Alignment.center,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.notifications_none, color: Colors.black87),
+                  onPressed: () => _showNotificationMenu(context, combinedUnread),
                 ),
-              ),
-          ],
+                if (unreadCount > 0)
+                  Positioned(
+                    right: 8,
+                    top: 8,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                      constraints: const BoxConstraints(
+                        minWidth: 16,
+                        minHeight: 16,
+                      ),
+                      child: Text(
+                        '$unreadCount',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
         );
       },
     );
@@ -236,26 +245,9 @@ class _DealerInventoryState extends State<DealerInventory> {
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   subtitle: Text("Stock: ${item.stockQuantity} Units"),
-                  trailing: SizedBox(
-                    width: 80,
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        FittedBox( // Prevent text overflow
-                          child: Text(
-                            "Manage",
-                            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
-                          ),
-                        ),
-                        // const SizedBox(height: 4),
-                        // GestureDetector(
-                        //   onTap: () => _openEditSheet(item), // Logic for editing
-                        //   child: const Icon(Icons.edit, size: 18, color: Colors.grey),
-                        // ),
-                      ],
-                    ),
-                  ),
+                  trailing: item.stockQuantity <= 0
+                      ? const Text("OUT OF STOCK", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 10))
+                      : const Text("IN STOCK", style: TextStyle(color: Colors.green, fontSize: 10)),
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(

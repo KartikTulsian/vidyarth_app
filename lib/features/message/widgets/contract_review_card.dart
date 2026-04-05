@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:vidyarth_app/core/services/payment_service.dart';
+// import 'package:vidyarth_app/core/services/payment_service.dart';
 import 'package:vidyarth_app/shared/models/trade_model.dart';
 import 'package:vidyarth_app/shared/models/app_enums.dart';
 
@@ -66,6 +66,17 @@ class ContractReviewCard extends StatelessWidget {
                 if (trade.finalizedDeposit != null && trade.finalizedDeposit! > 0)
                   _buildDataRow("Security Deposit", "₹${trade.finalizedDeposit}"),
 
+                if (trade.ownerPaymentDetails != null && !isMe) ...[
+                  const Divider(),
+                  const Text("PAY DIRECTLY TO OWNER VIA UPI",
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
+                  const SizedBox(height: 4),
+                  SelectableText(
+                    trade.ownerPaymentDetails!,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blueAccent),
+                  ),
+                ],
+
                 const Divider(height: 30),
                 Text(
                   trade.finalizedTerms ?? "Standard terms apply",
@@ -92,43 +103,7 @@ class ContractReviewCard extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: ElevatedButton(
-                      onPressed: () async {
-                        double totalAmount = (trade.finalizedPrice ?? 0) + (trade.finalizedDeposit ?? 0);
-                        if (trade.finalizedDeposit != null) totalAmount += trade.finalizedDeposit!;
-
-                        showDialog(
-                          context: context,
-                          barrierDismissible: false,
-                          builder: (context) => const Center(child: CircularProgressIndicator()),
-                        );
-
-                        final payment = PaymentService();
-
-                        payment.onPaymentResult = (success) {
-                          Navigator.pop(context); // Remove loading indicator
-                          if (success) {
-                            onAccept?.call();
-                          } else {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text("Payment failed or cancelled")),
-                            );
-                          }
-                          // Clean up listeners
-                          payment.dispose();
-                        };
-
-                        try {
-                          await payment.startPayment(
-                            amount: totalAmount,
-                            name: "Trade Payment",
-                            description: "Payment for ${trade.offerType?.name ?? 'Contract'}",
-                            notes: {'trade_id': trade.tradeId},
-                          );
-                        } catch (e) {
-                          Navigator.pop(context); // Remove loading
-                          debugPrint("Payment Error: $e");
-                        }
-                      },
+                      onPressed: onAccept,
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
                       child: const Text("ACCEPT & PAY"),
                     ),

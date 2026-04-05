@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:vidyarth_app/core/services/supabase_service.dart';
+import 'package:vidyarth_app/features/requests/screens/request_chat_page.dart';
 import 'package:vidyarth_app/features/shop/screens/shop_page.dart';
 import 'package:vidyarth_app/features/trade/screens/item_detail_page.dart';
 import 'package:vidyarth_app/shared/models/app_enums.dart';
@@ -24,6 +28,9 @@ class _BrowsePageState extends State<BrowsePage> {
   final SupabaseService _supabaseService = SupabaseService();
   final MapController _mapController = MapController();
   final TextEditingController _searchController = TextEditingController();
+  final _supabase = Supabase.instance.client;
+
+  final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
 
   final String? _currentUserId = Supabase.instance.client.auth.currentUser?.id;
   // --- LOCATION STATE ---
@@ -43,6 +50,10 @@ class _BrowsePageState extends State<BrowsePage> {
   // --- FILTER STATE ---
   double _radiusKm = 10.0;
   bool _showMyCollegeOnly = false;
+  final Set<String> _notifiedRequestIds = {};
+  final Set<String> _viewedRequestIds = {};
+  StreamSubscription? _requestsSubscription;
+  // Position? _userPosition;
 
   // Multi-select filters
   final List<String> _selectedStuffTypes = [];
@@ -57,6 +68,9 @@ class _BrowsePageState extends State<BrowsePage> {
   @override
   void initState() {
     super.initState();
+    _initializeLocalNotifications();
+    _setupRequestNotificationListener();
+    _getCurrentLocation();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initializeData();
     });
@@ -65,9 +79,101 @@ class _BrowsePageState extends State<BrowsePage> {
 
   @override
   void dispose() {
+    _requestsSubscription?.cancel();
     _searchController.dispose();
     _mapController.dispose();
     super.dispose();
+  }
+
+  void _initializeLocalNotifications() async {
+    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const settings = InitializationSettings(android: android);
+    await _localNotifications.initialize(settings: settings);
+
+    // Create the channel for Android (Mandatory for Android 8.0+)
+    const channel = AndroidNotificationChannel(
+      'urgent_channel',
+      'Urgent Requests',
+      importance: Importance.max,
+    );
+
+    await _localNotifications
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+  }
+
+  void _setupRequestNotificationListener() {
+    _requestsSubscription = _supabase
+        .from('requests')
+        .stream(primaryKey: ['request_id'])
+        .eq('status', 'OPEN')
+        .listen((List<Map<String, dynamic>> data) {
+      debugPrint("DEBUG: Received ${data.length} open requests from stream");
+      _checkAndNotifyNearby(data);
+    });
+  }
+
+  void _checkAndNotifyNearby(List<Map<String, dynamic>> requests) async {
+    if (_myLocation == null) {
+      debugPrint("DEBUG: Skipping notification check - Position not ready");
+      return;
+    }
+
+    for (var req in requests) {
+      final String reqId = req['request_id'];
+
+      // Skip if already notified or if it's the current user's own request
+      if (_notifiedRequestIds.contains(reqId) || req['user_id'] == _currentUserId) continue;
+
+      try {
+        double distance = Geolocator.distanceBetween(
+            _myLocation!.latitude,
+            _myLocation!.longitude,
+            (req['location_latitude'] as num).toDouble(),
+            (req['location_longitude'] as num).toDouble()
+        ) / 1000;
+
+        double radius = (req['radius_km'] as num?)?.toDouble() ?? 2.0;
+
+        if (distance <= radius) {
+          debugPrint("DEBUG: Nearby request detected ($distance km). Notifying user...");
+          _notifiedRequestIds.add(reqId); // Mark as notified
+          _showSystemNotification(
+              req['stuff_type'] ?? "Item",
+              req['description'] ?? "Someone nearby needs an item urgently."
+          );
+        }
+      } catch (e) {
+        debugPrint("DEBUG ERROR: Notification distance check failed: $e");
+      }
+    }
+  }
+
+  Future<void> _showSystemNotification(String type, String desc) async {
+    const androidDetails = AndroidNotificationDetails(
+      'urgent_channel',
+      'Urgent Requests',
+      channelDescription: 'Notifications for nearby urgent trade requests',
+      importance: Importance.max,
+      priority: Priority.high,
+      ticker: 'ticker',
+      icon: '@mipmap/ic_launcher',
+    );
+
+    const platformDetails = NotificationDetails(android: androidDetails);
+
+    try {
+      final int notificationId = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+      await _localNotifications.show(
+        id: notificationId,
+        notificationDetails: platformDetails,
+        payload: 'urgent_request',
+      );
+      debugPrint("DEBUG: Notification sent successfully.");
+    } catch (e) {
+      debugPrint("DEBUG ERROR: _localNotifications.show failed: $e");
+    }
   }
 
   Future<void> _initializeData() async {
@@ -81,6 +187,7 @@ class _BrowsePageState extends State<BrowsePage> {
       if (mounted) setState(() => _isLoading = false);
     }
   }
+
 
   Future<void> _getCurrentLocation() async {
     try {
@@ -154,6 +261,36 @@ class _BrowsePageState extends State<BrowsePage> {
       });
     }
   }
+
+  // void _showNearbyRequests(List<Map<String, dynamic>> requests) {
+  //   showModalBottomSheet(
+  //     context: context,
+  //     builder: (ctx) => ListView.builder(
+  //       itemCount: requests.length,
+  //       itemBuilder: (context, i) {
+  //         final req = requests[i];
+  //         return ListTile(
+  //           leading: const Icon(Icons.bolt, color: Colors.orange),
+  //           title: Text("Need: ${req['stuff_type']}"),
+  //           subtitle: Text(req['description']),
+  //           trailing: ElevatedButton(
+  //             onPressed: () {
+  //               Navigator.pop(ctx);
+  //               Navigator.push(context, MaterialPageRoute(
+  //                 builder: (context) => ChatPage(
+  //                   receiverId: req['user_id'],
+  //                   receiverName: "Urgent Requester",
+  //                   offerId: null,
+  //                 ),
+  //               ));
+  //             },
+  //             child: const Text("Chat"),
+  //           ),
+  //         );
+  //       },
+  //     ),
+  //   );
+  // }
 
   void _applyFilters() {
     final query = _searchController.text.toLowerCase();
@@ -435,6 +572,12 @@ class _BrowsePageState extends State<BrowsePage> {
             ),
           ),
 
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 70, // Placed below search bar
+            right: 16,
+            child: _buildUrgentRequestFAB(),
+          ),
+
           // --- LOADING INDICATOR ---
           if (_isLoading)
             const Center(
@@ -459,6 +602,168 @@ class _BrowsePageState extends State<BrowsePage> {
             _getCurrentLocation();
           }
         },
+      ),
+    );
+  }
+
+  Widget _buildUrgentRequestFAB() {
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: _supabase.from('requests').stream(primaryKey: ['request_id']).eq('status', 'OPEN'),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || snapshot.data!.isEmpty) return const SizedBox.shrink();
+
+        final nearbyRequests = snapshot.data!.where((req) {
+          if (_myLocation == null) return false;
+          if (req['user_id'] == _currentUserId) return false;
+          try {
+            double dist = Geolocator.distanceBetween(
+                _myLocation!.latitude, _myLocation!.longitude,
+                (req['location_latitude'] as num).toDouble(),
+                (req['location_longitude'] as num).toDouble()
+            ) / 1000;
+            return dist <= (req['radius_km'] ?? 2.0);
+          } catch (e) { return false; }
+        }).toList();
+
+        if (nearbyRequests.isEmpty) return const SizedBox.shrink();
+
+        final unseenCount = nearbyRequests.where((req) => !_viewedRequestIds.contains(req['request_id'])).length;
+        final bool hasUnseen = unseenCount > 0;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            FloatingActionButton.small(
+              heroTag: "urgent_notif_btn",
+              backgroundColor: Colors.white,
+              elevation: 8,
+              onPressed: () => _showNearbyRequests(nearbyRequests),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  // Change icon color from Red (new) to Black (normalized/seen)
+                  Icon(
+                    hasUnseen ? Icons.notifications_active : Icons.notifications,
+                    color: hasUnseen ? Colors.redAccent : Colors.black,
+                  ),
+
+                  // Only show the red number badge if there are UNSEEN requests
+                  if (hasUnseen)
+                    Positioned(
+                      right: 0, top: 0,
+                      child: CircleAvatar(
+                        radius: 8,
+                        backgroundColor: Colors.red,
+                        child: Text("$unseenCount", style: const TextStyle(fontSize: 9, color: Colors.white, fontWeight: FontWeight.bold)),
+                      ),
+                    )
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                // Change label background from Red to Black when normalized
+                  color: hasUnseen ? Colors.redAccent : Colors.black,
+                  borderRadius: BorderRadius.circular(12)
+              ),
+              child: const Text("URGENT", style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)),
+            )
+          ],
+        );
+      },
+    );
+  }
+
+// 3. Updated Modal with Expandable List and Chat Option
+  void _showNearbyRequests(List<Map<String, dynamic>> requests) {
+
+    setState(() {
+      for (var req in requests) {
+        _viewedRequestIds.add(req['request_id']);
+      }
+    });
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => Container(
+        height: MediaQuery.of(context).size.height * 0.6,
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+        ),
+        child: Column(
+          children: [
+            const SizedBox(height: 12),
+            Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2))),
+            const Padding(
+              padding: EdgeInsets.all(20.0),
+              child: Text("Urgent Needs Nearby", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            ),
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: requests.length,
+                itemBuilder: (context, i) {
+                  final req = requests[i];
+                  final double dist = _myLocation == null ? 0 : Geolocator.distanceBetween(
+                      _myLocation!.latitude, _myLocation!.longitude,
+                      req['location_latitude'], req['location_longitude']
+                  ) / 1000;
+
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                    child: ExpansionTile(
+                      leading: const CircleAvatar(backgroundColor: Color(0xFFFFEBEE), child: Icon(Icons.bolt, color: Colors.red)),
+                      title: Text("Need: ${req['stuff_type']}", style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text("${dist.toStringAsFixed(1)} km away • ${req['urgency_level']}"),
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text("Request Details:", style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 4),
+                              Text(req['description'] ?? "No additional details provided.", style: const TextStyle(fontSize: 14)),
+                              const Divider(height: 32),
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    Navigator.pop(ctx);
+                                    Navigator.push(context, MaterialPageRoute(
+                                      builder: (context) => RequestChatPage( // CHANGED HERE
+                                        requestId: req['request_id'],
+                                        receiverId: req['user_id'],
+                                        receiverName: "Requester (${req['stuff_type']})",
+                                      ),
+                                    ));
+                                  },
+                                  icon: const Icon(Icons.chat_bubble_outline),
+                                  label: const Text("HELP & CHAT"),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.black, foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
